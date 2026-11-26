@@ -1,0 +1,51 @@
+// Vercel serverless function: /api/nhl
+// Proxies NHL public endpoints server-side so the browser does not call NHL directly.
+export default async function handler(req, res) {
+  const type = String(req.query.type || '');
+  const date = String(req.query.date || 'now');
+  const seasonStart = new Date().getMonth() >= 9 ? new Date().getFullYear() : new Date().getFullYear() - 1;
+  const seasonId = `${seasonStart}${seasonStart + 1}`;
+
+  let url;
+  if (type === 'score') {
+    if (!/^(now|\d{4}-\d{2}-\d{2})$/.test(date)) {
+      return res.status(400).json({ error: 'Invalid date' });
+    }
+    url = `https://api-web.nhle.com/v1/score/${date}`;
+  } else if (type === 'points' || type === 'goals') {
+    url = `https://api-web.nhle.com/v1/skater-stats-leaders/current?categories=${type}&limit=10`;
+  } else if (type === 'standings') {
+    url = 'https://api-web.nhle.com/v1/standings/now';
+  } else if (type === 'finns') {
+    const filter = `gameTypeId=2 and seasonId=${seasonId} and nationalityCode='FIN'`;
+    const params = new URLSearchParams({
+      isAggregate: 'false',
+      isGame: 'false',
+      limit: '100',
+      sort: 'points',
+      cayenneExp: filter
+    });
+    url = `https://api.nhle.com/stats/rest/en/skater/summary?${params.toString()}`;
+  } else {
+    return res.status(400).json({ error: 'Unknown NHL data type' });
+  }
+
+  try {
+    const upstream = await fetch(url, {
+      headers: { 'Accept': 'application/json', 'User-Agent': 'NHL-Center/1.0' }
+    });
+    const body = await upstream.text();
+    if (!upstream.ok) {
+      return res.status(upstream.status).json({
+        error: 'NHL data provider returned an error',
+        status: upstream.status,
+        details: body.slice(0, 500)
+      });
+    }
+    res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=60');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return res.status(200).send(body);
+  } catch (error) {
+    return res.status(502).json({ error: 'Could not reach NHL data provider', details: error.message });
+  }
+}
